@@ -24,6 +24,8 @@ jobs:
           test -s "$RUNNER_TEMP/pub/key.pem"
           export TRANSFER_KEY=$(openssl rand -hex 32)
           printf %s "$TRANSFER_KEY" | openssl pkeyutl -encrypt -pubin -inkey "$RUNNER_TEMP/pub/key.pem" -out key.enc
+          echo "Exporting iPhoneOS SDK $(xcrun --sdk iphoneos --show-sdk-version) from $(xcrun --sdk iphoneos --show-sdk-path)"
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = 27.1
           for pair in 'iphoneos iPhoneOS' 'macosx MacOSX'; do
             set -- $pair
             dest="sdk/Developer/Platforms/$2.platform/Developer/SDKs/$2"26.5.sdk
@@ -76,7 +78,7 @@ jobs:
           set -euo pipefail
           docker build -t playport-build build/docker
           docker run --rm -v "$PWD:/w/playport" -v /tmp/transfer/sdk:/w/sdk -w /w/playport playport-build bash -euo pipefail -c '
-            git config --global --add safe.directory /w/playport
+            chown -R "$(id -u):$(id -g)" /w/playport
             python3 build/docker/sdk-tbd.py /w/sdk
             bash build/docker/llvm-mingw.sh /w/llvm-mingw
             ./pp setup --llvm-mingw /w/llvm-mingw --darwin-sdk /w/sdk --usbmux-socket /tmp/playport-ci-usbmux.sock
