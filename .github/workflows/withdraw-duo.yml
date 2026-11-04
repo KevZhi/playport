@@ -1,0 +1,21 @@
+name: Withdraw unvalidated Duo release
+on:
+  push:
+    paths: ['.github/workflows/withdraw-duo.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  withdraw:
+    if: github.repository == 'KevZhi/playport'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const {data: releases} = await github.rest.repos.listReleases({owner, repo});
+            const release = releases.find(r => r.tag_name === 'duo-community-2026-11-05');
+            if (!release) throw new Error('Release not found');
+            await github.rest.repos.updateRelease({owner, repo, release_id: release.id, draft: true, name: 'WITHDRAWN — Playport Duo runtime failure', body: 'Withdrawn pending investigation and repair of a reproducible FEX runtime illegal-instruction failure. Do not distribute or install this build. Assets are retained privately for diagnosis.'});
+            core.info('Release withdrawn to draft; all assets retained.');
