@@ -1,0 +1,133 @@
+name: Sign Playport SDK 27.1 for Duo
+on:
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: Successful Playport build run ID
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  sign:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Playport-Duo-unsigned
+          path: unsigned
+          run-id: ${{ inputs.build_run }}
+          github-token: ${{ github.token }}
+      - name: Select compiled IPA
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import pathlib, shutil
+          files=list(pathlib.Path('unsigned').rglob('*.ipa'))
+          assert len(files)==1, 'Expected one compiled IPA'
+          shutil.copyfile(files[0], 'playport-unsigned.ipa')
+          PYCODE
+      - name: Import signing materials into temporary keychain
+        env:
+          CERT_B64: ${{ secrets.PLAYPORT_DEV_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.PLAYPORT_DEV_P12_PASSWORD }}
+          PROFILE_B64: ${{ secrets.PLAYPORT_DEV_PROFILE_BASE64 }}
+          HELPER_B64: ${{ secrets.PLAYPORT_JIT_PROFILE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$CERT_B64" && test -n "$CERT_PASSWORD" && test -n "$PROFILE_B64"
+          printf '%s' "$CERT_B64" | base64 --decode > "$RUNNER_TEMP/duo.p12"
+          printf '%s' "$PROFILE_B64" | base64 --decode > "$RUNNER_TEMP/duo.mobileprovision"
+          printf '%s' "$HELPER_B64" | base64 --decode > "$RUNNER_TEMP/helper.mobileprovision"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          KEYCHAIN="$RUNNER_TEMP/duo-signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/duo.p12" -P "$CERT_PASSWORD" -t cert -f pkcs12 -k "$KEYCHAIN" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+      - name: Validate profile and sign existing app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p signing signed
+          ditto -x -k playport-unsigned.ipa signing
+          security cms -D -i "$RUNNER_TEMP/duo.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          python3 - <<'PY'
+          import datetime, hashlib, os, pathlib, plistlib, shutil, subprocess
+          T = pathlib.Path(os.environ['RUNNER_TEMP'])
+          apps = list(pathlib.Path('signing/Payload').glob('*.app'))
+          assert len(apps) == 1
+          app = apps[0]
+          main_info = plistlib.loads((app/'Info.plist').read_bytes())
+          exe = app/main_info['CFBundleExecutable']
+          build_info = subprocess.check_output(['xcrun','vtool','-show-build',str(exe)],text=True)
+          assert 'sdk 27.1' in build_info, 'Executable was not linked with iOS SDK 27.1'
+          print(build_info)
+          exts = list(app.rglob('*.appex'))
+          assert len(exts) == 1, 'Review unexpected extension layout before signing'
+          assert not list(app.rglob('*.app')), 'Unexpected nested app'
+          keychain = str(T / 'duo-signing.keychain-db')
+          identities = subprocess.check_output(['security','find-identity','-v','-p','codesigning',keychain],text=True)
+          profiles = {}
+          for bundle, file, bid in [(app,'duo','com.kevzhi.playport.duo'),(exts[0],'helper','com.kevzhi.playport.duo.PlayportJIT')]:
+              profile = plistlib.loads(subprocess.check_output(['security','cms','-D','-i',str(T / (file+'.mobileprovision'))]))
+              ent = profile['Entitlements']
+              assert ent['application-identifier'] == profile['TeamIdentifier'][0]+'.'+bid
+              assert ent.get('get-task-allow') is True
+              if bundle == app: assert ent.get('com.apple.developer.kernel.increased-memory-limit') is True
+              assert len(profile.get('ProvisionedDevices', [])) > 0
+              assert profile['ExpirationDate'] > datetime.datetime.utcnow()
+              certs = [hashlib.sha1(c).hexdigest().upper() for c in profile['DeveloperCertificates']]
+              matches = [c for c in certs if c in identities]
+              assert len(matches) == 1
+              info_path = bundle / 'Info.plist'
+              info = plistlib.loads(info_path.read_bytes())
+              info['CFBundleIdentifier'] = bid
+              info_path.write_bytes(plistlib.dumps(info))
+              ent['keychain-access-groups'] = [profile['TeamIdentifier'][0]+'.'+bid]
+              ep = T / (file+'-entitlements.plist')
+              ep.write_bytes(plistlib.dumps(ent))
+              shutil.copyfile(T / (file+'.mobileprovision'),bundle/'embedded.mobileprovision')
+              profiles[bundle] = (matches[0],ep,bundle/info['CFBundleExecutable'])
+          assert profiles[app][0] == profiles[exts[0]][0]
+          identity = profiles[app][0]
+          def sign(path, ent=None):
+              args=['codesign','--force','--sign',identity,'--keychain',keychain,'--timestamp=none']
+              if ent: args += ['--entitlements',str(ent),'--generate-entitlement-der']
+              subprocess.run(args+[str(path)],check=True)
+          magic={bytes.fromhex(h) for h in ['feedface','feedfacf','cefaedfe','cffaedfe','cafebabe','bebafeca','cafebabf','bfbafeca']}
+          executables={v[2] for v in profiles.values()}
+          for path in app.rglob('*'):
+              if path.is_symlink() or not path.is_file() or path in executables or any(p.suffix=='.framework' for p in path.parents): continue
+              with path.open('rb') as f: is_macho=f.read(4) in magic
+              if is_macho: sign(path)
+          for framework in sorted(app.rglob('*.framework'),key=lambda p:len(p.parts),reverse=True): sign(framework)
+          for bundle in sorted(profiles,key=lambda p:len(p.parts),reverse=True):
+              sign(bundle,profiles[bundle][1])
+              subprocess.run(['codesign','--verify','--deep','--strict',str(bundle)],check=True)
+              signed=plistlib.loads(subprocess.check_output(['codesign','-d','--entitlements',':-',str(bundle)],stderr=subprocess.DEVNULL))
+              assert signed['get-task-allow'] is True
+          print('Both bundles signed and verified with development entitlements.')
+          PY
+          cd signing
+          /usr/bin/zip -qry ../signed/playport-duo-sdk27.1-development.ipa Payload
+      - name: Upload signed IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: playport-duo-sdk27.1-development
+          path: signed/playport-duo-sdk27.1-development.ipa
+          retention-days: 1
+          if-no-files-found: error
+      - name: Clean temporary credentials
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/duo-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/duo.p12" "$RUNNER_TEMP/duo.mobileprovision" "$RUNNER_TEMP/profile.plist" "$RUNNER_TEMP/entitlements.plist" "$RUNNER_TEMP/helper.mobileprovision" "$RUNNER_TEMP/duo-entitlements.plist" "$RUNNER_TEMP/helper-entitlements.plist"
