@@ -1,0 +1,125 @@
+name: Publish tested Duo community build
+on:
+  push:
+    paths: ['.github/workflows/publish-duo.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-duo-20261105
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.repository == 'KevZhi/playport'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_REV: f7e27d14fd08ab289511df8bf79649785086d361
+      RELEASE_TAG: duo-community-2026-11-05
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f7e27d14fd08ab289511df8bf79649785086d361
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore successful build state without rebuilding
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .work
+            app/Staged
+            app/Sources/S1Probe/Runtime
+            app/Sources/WinIOS
+          key: duo-arm64-f7e27d1-sdk271-v1-41866894102-1
+          restore-keys: duo-arm64-f7e27d1-sdk271-v1-
+          fail-on-cache-miss: true
+      - name: Download the tested unsigned IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: Playport-Duo-unsigned
+          run-id: 41866894102
+          github-token: ${{ github.token }}
+          path: release-assets
+      - name: Check binary and recover original generated source input
+        run: |
+          set -euo pipefail
+          echo '0204ced6cead7297b4e6a01095ccc0f3d3c60a38bbcd6e280eb52fa72a868a29  release-assets/Playport-Duo-unsigned.ipa' | sha256sum -c -
+          test -s .work/run/unix/wine/build-macos/include/config.h
+          python3 - <<'PY'
+          import zipfile, pathlib
+          z = zipfile.ZipFile('release-assets/Playport-Duo-unsigned.ipa')
+          assert z.testzip() is None
+          assert not any(n.endswith('embedded.mobileprovision') for n in z.namelist())
+          assert 'Payload/S1Probe.app/PlugIns/PlayportJIT.appex/Info.plist' in z.namelist()
+          with zipfile.ZipFile('release-assets/NOTICES.zip','w',zipfile.ZIP_DEFLATED) as out:
+              for n in z.namelist():
+                  if '/Licenses/' in n and not n.endswith('/'):
+                      out.writestr(n.split('/Licenses/',1)[1], z.read(n))
+          PY
+      - name: Pack and validate complete corresponding source
+        run: |
+          set -euo pipefail
+          python3 -u build/source-bundle.py .work/duo-source --rev "$SOURCE_REV" --run .work/run
+          python3 build/source-bundle.py .work/duo-source --check
+          python3 - <<'PY'
+          import json
+          d=json.load(open('.work/duo-source/SOURCE-MANIFEST.json'))
+          assert d['status']=='complete' and not d['missing'], d['missing']
+          PY
+          cp .work/duo-source/SOURCE-MANIFEST.json release-assets/
+          tar -cf .work/Playport-Duo-source.tar -C .work duo-source
+          if [ "$(stat -c %s .work/Playport-Duo-source.tar)" -gt 1900000000 ]; then
+            split -b 1900000000 -d -a 3 .work/Playport-Duo-source.tar release-assets/Playport-Duo-source.tar.part-
+          else
+            mv .work/Playport-Duo-source.tar release-assets/
+          fi
+      - name: Include exact CI workflow, rebuild information and release notes
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/build-duo-ipa.yml?ref=a31f2c47598817815890d93b85cd9aadf2b9c277" -H 'Accept: application/vnd.github.raw+json' > release-assets/build-duo-ipa.yml
+          gh api "repos/$GITHUB_REPOSITORY/contents/DUO-RELEASE-NOTES.md?ref=$GITHUB_SHA" -H 'Accept: application/vnd.github.raw+json' > release-notes.md
+          cp docs/BUILDING.md release-assets/BUILDING.md
+          cp docs/DEVICE.md release-assets/DEVICE.md
+          cp docs/DISTRIBUTION.md release-assets/DISTRIBUTION.md
+          cp pins.lock release-assets/pins.lock
+          cat > release-assets/INSTALL-REBUILD.md <<'EOF'
+          # Install or rebuild this community test build
+
+          Download Playport-Duo-unsigned.ipa and sign it with your own Apple account.
+          Preserve Increased Memory Limit and the PlayportJIT extension. Enable Developer
+          Mode and use LocalDevVPN plus Playport's built-in pairing flow for JIT.
+          This is the S1Probe development app variant built in Xcode Release configuration.
+
+          Exact app source: f7e27d14fd08ab289511df8bf79649785086d361.
+          Exact CI build recipe: the attached build-duo-ipa.yml from
+          a31f2c47598817815890d93b85cd9aadf2b9c277 in KevZhi/playport.
+          Original binary build: https://github.com/KevZhi/playport/actions/runs/41866894102
+          IPA SHA256: 0204ced6cead7297b4e6a01095ccc0f3d3c60a38bbcd6e280eb52fa72a868a29
+
+          The source bundle contains the pinned sources, patches, build scripts and
+          original generated Wine config.h recovered from that build's cache.
+          SOURCE-MANIFEST.json describes the pinned source archive, while the binary
+          link above and its SHA256 identify the separately built Xcode IPA.
+          Follow the attached BUILDING.md and the exact CI recipe to rebuild and relink
+          modified components. Supply your own Apple SDK through an authorized source;
+          Apple SDKs and signing credentials are not distributed here.
+          The CI used an ARM64 Linux runner and the author's Docker toolchain, then
+          Xcode 27.1 on macOS to link/package the app. The SDK compatibility directories
+          are named 26.5 by the author's scripts, but the actual SDK used was 27.1.
+
+          If the source archive has numbered parts, concatenate them in lexical order:
+          cat Playport-Duo-source.tar.part-* > Playport-Duo-source.tar
+          tar -xf Playport-Duo-source.tar
+          Each component preserves its license. See NOTICES.zip and the app's Licenses.
+          EOF
+          (cd release-assets && sha256sum * > SHA256SUMS)
+      - name: Create complete release and publish
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --target "$SOURCE_REV" --draft --prerelease --title 'Playport for iPhone Duo — unsigned IPA (iOS 27.3 tested)' --notes-file release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* -R "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease --notes-file release-notes.md
