@@ -73,6 +73,16 @@ jobs:
           set -euo pipefail
           export TRANSFER_KEY=$(openssl pkeyutl -decrypt -inkey "$RUNNER_TEMP/private.pem" -in /tmp/transfer/key.enc)
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:TRANSFER_KEY -in /tmp/transfer/sdk.enc | tar xzf - -C /tmp/transfer
+      - uses: actions/cache/restore@v4
+        id: build-cache
+        with:
+          path: |
+            .work
+            app/Staged
+            app/Sources/S1Probe/Runtime
+            app/Sources/WinIOS
+          key: duo-arm64-f7e27d1-sdk271-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: duo-arm64-f7e27d1-sdk271-v1-
       - name: Build runtime and stage phone resources
         run: |
           set -euo pipefail
@@ -80,14 +90,36 @@ jobs:
           docker run --rm -v "$PWD:/w/playport" -v /tmp/transfer/sdk:/w/sdk -w /w/playport playport-build bash -euo pipefail -c '
             chown -R "$(id -u):$(id -g)" /w/playport
             python3 build/docker/sdk-tbd.py /w/sdk
-            bash build/docker/llvm-mingw.sh /w/llvm-mingw
-            ./pp setup --llvm-mingw /w/llvm-mingw --darwin-sdk /w/sdk --usbmux-socket /tmp/playport-ci-usbmux.sock
+            bash build/docker/llvm-mingw.sh /w/playport/.work/inputs/llvm-mingw
+            ./pp setup --llvm-mingw /w/playport/.work/inputs/llvm-mingw --darwin-sdk /w/sdk --usbmux-socket /tmp/playport-ci-usbmux.sock
             printf "#!/bin/sh\n# INCREASED_MEMORY_LIMIT\nexit 1\n" > /w/xtool-stub
             chmod +x /w/xtool-stub
+            export PREMAKE5=/w/playport/.work/run/steamapi/gbe/third-party/common/linux/premake-arm/premake5
             XTOOL=/w/xtool-stub ./pp build --to notices
             cp .work/run/unix/linktest/libwineserver-ws4.a app/Staged/lib/libwineserver.a
             tar czf staged.tgz app/Staged app/Sources/S1Probe/Runtime app/Sources/WinIOS
           '
+      - name: Make logs and build state readable
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" .work app/Staged app/Sources/S1Probe/Runtime app/Sources/WinIOS
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            .work
+            app/Staged
+            app/Sources/S1Probe/Runtime
+            app/Sources/WinIOS
+          key: duo-arm64-f7e27d1-sdk271-v1-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-diagnostics
+          path: |
+            .work/run/logs/
+            .work/run/**/*.log
+          include-hidden-files: true
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: phone-resources
