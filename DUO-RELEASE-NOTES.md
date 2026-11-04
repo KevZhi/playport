@@ -4,7 +4,7 @@ An unsigned IPA built from De-Os's iPhone Duo patch, shared by KevZhi so other D
 
 ## Device test
 
-KevZhi reports successful operation on an iPhone Duo running iOS 27.3. This is a user-reported smoke test, not a comprehensive game-compatibility certification. No specific game, frame rate, or folding/rotation behavior is claimed here.
+KevZhi confirms that the app installs, launches and reaches its main screen on an iPhone Duo running iOS 27.3. No game has been tested. JIT readiness, gameplay, performance, folding/rotation and virtual-controller behavior have not been verified by KevZhi.
 
 ## Download and install
 
