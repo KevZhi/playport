@@ -66,6 +66,9 @@ MAP="-ffile-prefix-map=$F=fex -ffile-prefix-map=$M=llvm-mingw"
 # The epoch is in the flags too, so objects built before it are compiled again.
 export SOURCE_DATE_EPOCH=$(git -C "$F" log -1 --format=%ct "$PIN")
 MAP="$MAP -DPLAYPORT_SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+# Target the iPhone, never the Linux build runner. FEX defaults TUNE_CPU to
+# native and can enable SVE from /proc/cpuinfo on ARM CI hosts. Apple CPUs
+# do not support SVE; use the portable ARMv8 baseline for both PE modules.
 for mode in arm64ec wow64; do
     target=arm64ec; dllname=arm64ecfex; machine=ARM64EC; ios_flags=-DFEX_IOS_HOST=1
     # The WoW64 module runs on the iOS host too (fex 0016: JIT pool write
@@ -89,6 +92,7 @@ cmake -S "$F" -B "$F/build-$mode" -G Ninja \
     -DCMAKE_CXX_FLAGS="$ios_flags -fuse-ld=lld -stdlib=libc++ $MAP" \
     -DCMAKE_ASM_FLAGS="$ios_flags" \
     -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -Wl,--no-insert-timestamp" \
+    -DTUNE_CPU=none -DTUNE_ARCH=armv8-a \
     -DFEX_IOS_HOST_BUILD=ON -DENABLE_LTO=FALSE -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF -DBUILD_FEXCONFIG=OFF \
     > "$ROOT/fex-$mode-configure.log"
