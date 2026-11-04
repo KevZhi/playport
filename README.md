@@ -1,3 +1,17 @@
+# Playport for iPhone Duo — community builds
+
+**[Downloads, corresponding source and checksums](https://github.com/KevZhi/playport/releases)** · **[Duo source branch](https://github.com/KevZhi/playport/tree/iphone-duo)** · **[Build workflow proposed to De-Os](https://github.com/De-Os/playport/pull/1)**
+
+This fork shares an **unofficial unsigned IPA** of Playport with **De-Os's iPhone Duo fullscreen adaptation**, so other users can test without compiling the app. KevZhi reports successful operation on an **iPhone Duo running iOS 27.3**. This is a smoke test, not a comprehensive game or performance certification.
+
+Download `Playport-Duo-unsigned.ipa` from a published release and sign it with your own Apple account. Keep the **PlayportJIT extension** and **Increased Memory Limit** entitlement. Enable Developer Mode, connect **LocalDevVPN**, then complete Playport's built-in pairing and setup checks. Signing alone does not enable JIT.
+
+The build uses Xcode / iOS SDK 27.1 and the development app variant (`S1Probe.app`) in Xcode Release configuration. Matching source, license notices and rebuild instructions accompany each published IPA. Personal certificates, provisioning profiles and pairing records are not included.
+
+Credit: [Playport](https://github.com/playportdev/playport) and [De-Os's Duo patch / upstream PR #83](https://github.com/playportdev/playport/pull/83). This fork is not an official upstream release. The original project README below describes upstream features and tests; those claims are not additional Duo test results from this fork.
+
+---
+
 <div align="center">
 
 <img src="site/logo.svg" width="128" alt="Playport">
@@ -280,3 +294,4 @@ GNU General Public License, version 3 or (at your option) any later version
 Playport's own code ([`LICENSE-EXCEPTION.md`](LICENSE-EXCEPTION.md)).
 
 Copyright (C) 2026 The Playport authors.
+
