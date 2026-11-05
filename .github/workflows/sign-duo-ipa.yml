@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: Playport-Duo-unsigned-nosve
+          name: Playport-Duo-unsigned-lse
           path: unsigned
           run-id: ${{ inputs.build_run }}
           github-token: ${{ github.token }}
