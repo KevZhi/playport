@@ -81,8 +81,9 @@ jobs:
             app/Staged
             app/Sources/S1Probe/Runtime
             app/Sources/WinIOS
-          key: duo-arm64-f7e27d1-sdk271-nosve-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: duo-arm64-f7e27d1-sdk271-lse-v3-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            duo-arm64-f7e27d1-sdk271-lse-v3-
             duo-arm64-f7e27d1-sdk271-nosve-v2-
             duo-arm64-f7e27d1-sdk271-v1-
       - name: Build runtime and stage phone resources
@@ -110,7 +111,7 @@ jobs:
             XTOOL=/w/xtool-stub ./pp build --to notices
             for mode in arm64ec wow64; do
               grep -q "TUNE_CPU:STRING=none" .work/run/fex/build-$mode/CMakeCache.txt
-              grep -q "TUNE_ARCH:STRING=armv8-a" .work/run/fex/build-$mode/CMakeCache.txt
+              grep -q "TUNE_ARCH:STRING=armv8-a+lse$" .work/run/fex/build-$mode/CMakeCache.txt
               grep -E -- "-mcpu=|-march=" .work/run/fex/build-$mode/build.ninja | sort -u > .work/diagnostics/fex-$mode-after-flags.txt
               if grep -E -- "-mcpu=|-march=native|[+]sve" .work/diagnostics/fex-$mode-after-flags.txt; then
                 echo "Unsafe host CPU flags remain"; exit 1
@@ -133,7 +134,7 @@ jobs:
             app/Staged
             app/Sources/S1Probe/Runtime
             app/Sources/WinIOS
-          key: duo-arm64-f7e27d1-sdk271-nosve-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: duo-arm64-f7e27d1-sdk271-lse-v3-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -185,6 +186,6 @@ jobs:
           unzip -tq Playport-Duo-unsigned.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: Playport-Duo-unsigned-nosve
+          name: Playport-Duo-unsigned-lse
           path: Playport-Duo-unsigned.ipa
           if-no-files-found: error
