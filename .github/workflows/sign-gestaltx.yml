@@ -1,0 +1,110 @@
+name: Sign GestaltX for Duo
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sign:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - name: Download verified upstream IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 https://github.com/huamidev/GestaltX/releases/download/v1.0.2/GestaltX_1.0.2.ipa -o upstream.ipa
+          echo '4748787786d45b57ff03449669a577ab086ec8b73b96d9109d72f4f6eca13f58  upstream.ipa' | shasum -a 256 -c -
+      - name: Import existing development certificate
+        env:
+          CERT_B64: ${{ secrets.PLAYPORT_DEV_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.PLAYPORT_DEV_P12_PASSWORD }}
+          PROFILE_B64: ${{ secrets.GESTALTX_DUO_PROFILE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$CERT_B64" && test -n "$CERT_PASSWORD" && test -n "$PROFILE_B64"
+          printf '%s' "$CERT_B64" | base64 --decode > "$RUNNER_TEMP/gestaltx.p12"
+          printf '%s' "$PROFILE_B64" | base64 --decode > "$RUNNER_TEMP/gestaltx.mobileprovision"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          KEYCHAIN="$RUNNER_TEMP/gestaltx.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/gestaltx.p12" -P "$CERT_PASSWORD" -t cert -f pkcs12 -k "$KEYCHAIN" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+      - name: Sign and verify GestaltX
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir signing signed
+          ditto -x -k upstream.ipa signing
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, pathlib, plistlib, shutil, subprocess
+          t = pathlib.Path(os.environ['RUNNER_TEMP'])
+          app = pathlib.Path('signing/Payload/GestaltX.app')
+          assert app.is_dir()
+          assert not list(app.rglob('*.appex')) and not list(app.rglob('*.app'))
+          profile_path = t/'gestaltx.mobileprovision'
+          profile = plistlib.loads(subprocess.check_output(['security','cms','-D','-i',str(profile_path)]))
+          bid = 'com.kevzhi.gestaltx.duo'
+          group = 'group.com.kevzhi.gestaltx.duo'
+          team = profile['TeamIdentifier'][0]
+          ent = profile['Entitlements']
+          assert ent['application-identifier'] == team+'.'+bid
+          assert ent.get('get-task-allow') is True
+          assert ent.get('com.apple.security.application-groups') == [group]
+          assert len(profile.get('ProvisionedDevices',[])) == 1
+          assert profile['ExpirationDate'] > datetime.datetime.utcnow()
+          keychain = str(t/'gestaltx.keychain-db')
+          identities = subprocess.check_output(['security','find-identity','-v','-p','codesigning',keychain],text=True)
+          certs = [hashlib.sha1(c).hexdigest().upper() for c in profile['DeveloperCertificates']]
+          matches = [c for c in certs if c in identities]
+          assert len(matches) == 1
+          info_path = app/'Info.plist'
+          info = plistlib.loads(info_path.read_bytes())
+          assert info['CFBundleIdentifier'] == 'com.huami.gestultx'
+          assert info['CFBundleShortVersionString'] == '1.0.2'
+          info['CFBundleIdentifier'] = bid
+          info_path.write_bytes(plistlib.dumps(info))
+          ent['keychain-access-groups'] = [team+'.'+bid]
+          ep = t/'gestaltx-entitlements.plist'
+          ep.write_bytes(plistlib.dumps(ent))
+          shutil.copyfile(profile_path, app/'embedded.mobileprovision')
+          def sign(path, entitlements=None):
+              args=['codesign','--force','--sign',matches[0],'--keychain',keychain,'--timestamp=none']
+              if entitlements: args += ['--entitlements',str(entitlements),'--generate-entitlement-der']
+              subprocess.run(args+[str(path)],check=True)
+          magic={bytes.fromhex(h) for h in ['feedface','feedfacf','cefaedfe','cffaedfe','cafebabe','bebafeca','cafebabf','bfbafeca']}
+          for path in app.rglob('*'):
+              if path.is_symlink() or not path.is_file() or path==app/info['CFBundleExecutable'] or any(p.suffix=='.framework' for p in path.parents): continue
+              with path.open('rb') as f: is_macho=f.read(4) in magic
+              if is_macho: sign(path)
+          for framework in sorted(app.rglob('*.framework'),key=lambda p:len(p.parts),reverse=True): sign(framework)
+          sign(app,ep)
+          subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)
+          signed_ent=plistlib.loads(subprocess.check_output(['codesign','-d','--entitlements',':-',str(app)],stderr=subprocess.DEVNULL))
+          assert signed_ent['application-identifier']==ent['application-identifier']
+          assert signed_ent['com.apple.security.application-groups']==[group]
+          result={'version':'1.0.2','bundle_id':bid,'app_group':group,'profile_expires':profile['ExpirationDate'].isoformat(),'device_count':1,'codesign_verified':True}
+          pathlib.Path('signed/verification.json').write_text(json.dumps(result,indent=2))
+          print('GestaltX signature and App Group verified.')
+          PY
+          cd signing
+          /usr/bin/zip -qry ../signed/GestaltX-1.0.2-Duo-signed.ipa Payload
+          cd ../signed
+          shasum -a 256 GestaltX-1.0.2-Duo-signed.ipa > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: GestaltX-1.0.2-Duo-signed
+          path: signed/
+          retention-days: 1
+          if-no-files-found: error
+      - name: Clean temporary signing materials
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/gestaltx.keychain-db" || true
+          rm -f "$RUNNER_TEMP/gestaltx.p12" "$RUNNER_TEMP/gestaltx.mobileprovision" "$RUNNER_TEMP/gestaltx-entitlements.plist"
